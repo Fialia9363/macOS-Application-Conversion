@@ -251,6 +251,9 @@ class MiniIDE(tk.Tk):
         self.title("Fialiaoi-cpp_Beta2")
         self.geometry("1360x900")
 
+        # 先初始化主题颜色
+        self._init_theme_colors()
+        
         # config & state
         self.config_data = {
             "gcc_path": None,
@@ -285,6 +288,14 @@ class MiniIDE(tk.Tk):
 
         # periodic updates
         self.after(1000, self._periodic_update)
+
+    def _init_theme_colors(self):
+        """初始化主题颜色变量"""
+        # 默认使用浅色主题颜色
+        self.editor_bg = "white"
+        self.editor_fg = "black"
+        self.linenumber_bg = "#f0f0f0"
+        self.linenumber_fg = "#666"
 
     # ---------------- config load/save ----------------
     def load_config(self):
@@ -592,10 +603,10 @@ class MiniIDE(tk.Tk):
         vscroll.pack(side="right", fill="y")
         text.configure(yscrollcommand=vscroll.set)
 
-        # 折叠标记区域
-        fold_canvas = tk.Canvas(frame, width=16, bg=self.linenumber_bg, highlightthickness=0)
-        fold_canvas.pack(side="left", fill="y")
-        frame.fold_canvas = fold_canvas
+        # 折叠标记区域（暂时注释掉，因为功能需要更多调试）
+        # fold_canvas = tk.Canvas(frame, width=16, bg=self.linenumber_bg, highlightthickness=0)
+        # fold_canvas.pack(side="left", fill="y")
+        # frame.fold_canvas = fold_canvas
 
         # bindings
         text.bind("<KeyRelease>", lambda e, t=text, l=ln: self._on_key_release(e, t, l))
@@ -617,9 +628,6 @@ class MiniIDE(tk.Tk):
         self.editor_nb.select(frame)
         self._update_line_numbers(text, ln)
         self._apply_syntax_highlight(text, file_path or "")
-        
-        # 分析代码结构用于折叠
-        self._analyze_code_structure(text, file_path or "")
         
         return frame
 
@@ -644,208 +652,35 @@ class MiniIDE(tk.Tk):
         filepath = getattr(self._get_current_editor_frame(), "filepath", "") or ""
         self._apply_syntax_highlight(text, filepath)
         self._update_cursor_pos(text)
-        
-        # 重新分析代码结构
-        self._analyze_code_structure(text, filepath)
 
     def _update_line_numbers(self, editor, ln):
         ln.config(state="normal")
         ln.delete("1.0", "end")
-        last = editor.index("end-1c").split(".")[0]
-        ln_text = "\n".join(str(i) for i in range(1, int(last)+1))
+        lines = editor.get("1.0", "end-1c").split('\n')
+        ln_text = "\n".join(str(i) for i in range(1, len(lines) + 1))
         ln.insert("1.0", ln_text)
         ln.config(state="disabled")
 
-    # ---------------- code folding ----------------
-    def _analyze_code_structure(self, editor, filepath):
-        """分析代码结构，识别函数和类用于折叠"""
-        if not filepath:
-            return
-            
-        content = editor.get("1.0", "end-1c")
-        lines = content.split('\n')
-        fold_regions = []
+    # ---------------- auto indent ----------------
+    def _on_return(self, event, editor):
+        # 获取当前行的缩进
+        current_line = editor.get("insert linestart", "insert")
+        indent_match = re.match(r'^(\s*)', current_line)
+        indent = indent_match.group(1) if indent_match else ""
         
-        # 根据文件类型使用不同的分析规则
-        if filepath.endswith('.py'):
-            # Python: 函数和类
-            indent_stack = []
-            for i, line in enumerate(lines, 1):
-                stripped = line.strip()
-                # 检查类定义
-                if stripped.startswith('class '):
-                    indent_stack.append(('class', i, len(line) - len(line.lstrip())))
-                # 检查函数定义
-                elif stripped.startswith('def '):
-                    indent_stack.append(('function', i, len(line) - len(line.lstrip())))
-                # 检查冒号结尾的行（可能是控制结构）
-                elif stripped.endswith(':') and not stripped.startswith('#'):
-                    current_indent = len(line) - len(line.lstrip())
-                    # 找到匹配的缩进级别
-                    while indent_stack and indent_stack[-1][2] >= current_indent:
-                        start_type, start_line, _ = indent_stack.pop()
-                        if i > start_line:
-                            fold_regions.append((start_type, start_line, i))
-                    
-                    indent_stack.append(('block', i, current_indent))
-            
-            # 处理剩余的未闭合块
-            for start_type, start_line, _ in indent_stack:
-                fold_regions.append((start_type, start_line, len(lines)))
-                
-        elif filepath.endswith(('.c', '.cpp', '.h')):
-            # C/C++: 函数和结构体
-            brace_stack = []
-            in_comment = False
-            in_string = False
-            escape_next = False
-            
-            for i, line in enumerate(lines, 1):
-                j = 0
-                while j < len(line):
-                    char = line[j]
-                    
-                    if escape_next:
-                        escape_next = False
-                        j += 1
-                        continue
-                        
-                    if char == '\\':
-                        escape_next = True
-                        j += 1
-                        continue
-                        
-                    if char == '"' and not in_comment:
-                        in_string = not in_string
-                        j += 1
-                        continue
-                        
-                    if char == '/' and j + 1 < len(line) and not in_string:
-                        if line[j+1] == '*':
-                            in_comment = True
-                            j += 2
-                            continue
-                        elif line[j+1] == '/':
-                            break  # 行注释，跳过该行剩余部分
-                            
-                    if char == '*' and j + 1 < len(line) and in_comment:
-                        if line[j+1] == '/':
-                            in_comment = False
-                            j += 2
-                            continue
-                            
-                    if not in_comment and not in_string:
-                        if char == '{':
-                            # 检查是否是函数或结构体定义
-                            prev_text = ' '.join(lines[max(0, i-2):i-1] + [line[:j]])
-                            if any(keyword in prev_text for keyword in ['class', 'struct', 'enum', 'union', 'namespace']) or \
-                               re.search(r'\w+\s*\([^)]*\)\s*$', '\n'.join(lines[max(0, i-2):i-1])):
-                                brace_stack.append(('block', i))
-                        elif char == '}':
-                            if brace_stack:
-                                start_type, start_line = brace_stack.pop()
-                                if i > start_line:
-                                    fold_regions.append((start_type, start_line, i))
-                                    
-                    j += 1
+        # 插入换行和缩进
+        editor.insert("insert", "\n" + indent)
         
-        # 保存折叠区域
-        self.fold_regions[editor] = fold_regions
-        self._update_fold_display(editor)
+        # 如果上一行以冒号结尾，增加一级缩进
+        prev_line = editor.get("insert-2l linestart", "insert-2l lineend")
+        if prev_line.rstrip().endswith(':'):
+            editor.insert("insert", "    ")
+            
+        return "break"
 
-    def _update_fold_display(self, editor):
-        """更新折叠显示标记"""
-        frame = None
-        for tab in self.editor_nb.tabs():
-            tab_frame = self.editor_nb.nametowidget(tab)
-            if tab_frame.text == editor:
-                frame = tab_frame
-                break
-                
-        if not frame or not hasattr(frame, 'fold_canvas'):
-            return
-            
-        canvas = frame.fold_canvas
-        canvas.delete("all")
-        
-        fold_regions = self.fold_regions.get(editor, [])
-        visible_lines = int(editor.index('end-1c').split('.')[0])
-        
-        for fold_type, start_line, end_line in fold_regions:
-            if start_line > visible_lines:
-                continue
-                
-            # 获取行位置
-            bbox = editor.bbox(f"{start_line}.0")
-            if not bbox:
-                continue
-                
-            y_pos = bbox[1]
-            is_folded = editor.mark_get(f"fold_{start_line}") if hasattr(editor, 'marks') else False
-            
-            # 绘制折叠标记
-            marker_color = "blue" if fold_type == 'function' else "green" if fold_type == 'class' else "orange"
-            canvas.create_rectangle(2, y_pos, 14, y_pos + 12, fill=marker_color, outline="")
-            canvas.create_text(8, y_pos + 6, text="-" if not is_folded else "+", 
-                             fill="white", font=("Arial", 8, "bold"))
-        
-        # 绑定点击事件
-        canvas.bind("<Button-1>", lambda e, ed=editor: self._on_fold_click(e, ed))
-
-    def _on_fold_click(self, event, editor):
-        """处理折叠标记点击"""
-        canvas = event.widget
-        y = event.y
-        
-        fold_regions = self.fold_regions.get(editor, [])
-        visible_lines = int(editor.index('end-1c').split('.')[0])
-        
-        for fold_type, start_line, end_line in fold_regions:
-            if start_line > visible_lines:
-                continue
-                
-            bbox = editor.bbox(f"{start_line}.0")
-            if not bbox:
-                continue
-                
-            y_pos = bbox[1]
-            if y_pos <= y <= y_pos + 12:
-                self._toggle_fold(editor, start_line, end_line)
-                break
-
-    def _toggle_fold(self, editor, start_line, end_line):
-        """切换折叠状态"""
-        fold_mark = f"fold_{start_line}"
-        
-        if editor.mark_get(fold_mark):
-            # 展开
-            editor.mark_unset(fold_mark)
-            editor.delete(f"{start_line}.0+1l", f"{end_line}.0")
-        else:
-            # 折叠
-            editor.mark_set(fold_mark, f"{start_line}.0")
-            editor.insert(f"{start_line}.0", " [...] ")
-
-    def _fold_all(self):
-        """折叠所有可折叠区域"""
-        editor = self._get_current_editor()
-        if not editor:
-            return
-            
-        fold_regions = self.fold_regions.get(editor, [])
-        for fold_type, start_line, end_line in fold_regions:
-            self._toggle_fold(editor, start_line, end_line)
-
-    def _unfold_all(self):
-        """展开所有折叠区域"""
-        editor = self._get_current_editor()
-        if not editor:
-            return
-            
-        # 重新分析代码结构来重置折叠状态
-        frame = self._get_current_editor_frame()
-        if frame and frame.filepath:
-            self._analyze_code_structure(editor, frame.filepath)
+    def _on_tab(self, event, editor):
+        editor.insert("insert", "    ")
+        return "break"
 
     # ---------------- syntax highlighting ----------------
     def _apply_syntax_highlight(self, editor, filepath):
@@ -899,37 +734,27 @@ class MiniIDE(tk.Tk):
         }
 
         # 应用高亮
+        pos = "1.0"
         for token_type, value in tokens:
+            if not value:
+                continue
+                
             tag_name = str(token_type)
             color = colors.get(tag_name, "#000000")
+            
+            # 创建标签（如果不存在）
             if tag_name not in editor.tag_names():
                 editor.tag_configure(tag_name, foreground=color)
+            
+            # 查找并标记所有出现的位置
             start = "1.0"
             while True:
-                pos = editor.search(value, start, stopindex="end", regexp=False)
-                if not pos:
+                start = editor.search(re.escape(value), start, stopindex="end", nocase=1)
+                if not start:
                     break
-                end = f"{pos}+{len(value)}c"
-                editor.tag_add(tag_name, pos, end)
+                end = f"{start}+{len(value)}c"
+                editor.tag_add(tag_name, start, end)
                 start = end
-
-    # ---------------- auto indent ----------------
-    def _on_return(self, event, editor):
-        editor.insert("insert", "\n")
-        line = editor.get("insert linestart", "insert")
-        indent = re.match(r"^(\s*)", line).group(1)
-        editor.insert("insert", indent)
-        
-        # 如果上一行以冒号结尾，增加一级缩进
-        prev_line = editor.get("insert-2l linestart", "insert-2l lineend")
-        if prev_line.rstrip().endswith(":"):
-            editor.insert("insert", "    ")
-            
-        return "break"
-
-    def _on_tab(self, event, editor):
-        editor.insert("insert", "    ")
-        return "break"
 
     # ---------------- code completion ----------------
     def _on_ctrl_space(self, event, editor):
@@ -1132,7 +957,7 @@ class MiniIDE(tk.Tk):
         # 检查是否已经打开
         for tab in self.editor_nb.tabs():
             frame = self.editor_nb.nametowidget(tab)
-            if frame.filepath == file_path:
+            if hasattr(frame, 'filepath') and frame.filepath == file_path:
                 self.editor_nb.select(tab)
                 return
                 
@@ -1162,7 +987,7 @@ class MiniIDE(tk.Tk):
         if not frame:
             return
             
-        if frame.filepath:
+        if hasattr(frame, 'filepath') and frame.filepath:
             try:
                 with open(frame.filepath, "w", encoding="utf-8") as f:
                     f.write(frame.text.get("1.0", "end-1c"))
@@ -1208,7 +1033,7 @@ class MiniIDE(tk.Tk):
     # ---------------- run/debug ----------------
     def run_current(self):
         frame = self._get_current_editor_frame()
-        if not frame or not frame.filepath:
+        if not frame or not hasattr(frame, 'filepath') or not frame.filepath:
             messagebox.showwarning("警告", "请先保存文件")
             return
             
@@ -1316,7 +1141,7 @@ class MiniIDE(tk.Tk):
         cursor_pos = editor.index("insert")
         line_num = int(cursor_pos.split(".")[0])
         frame = self._get_current_editor_frame()
-        file_path = frame.filepath if frame else ""
+        file_path = frame.filepath if frame and hasattr(frame, 'filepath') else ""
         
         if file_path not in self.breakpoints:
             self.breakpoints[file_path] = set()
@@ -1357,6 +1182,13 @@ class MiniIDE(tk.Tk):
         if hasattr(self, 'debug_proc') and self.debug_proc:
             self.debug_proc.stdin.write("c\n")
             self.debug_proc.stdin.flush()
+
+    # ---------------- code folding (简化版本) ----------------
+    def _fold_all(self):
+        messagebox.showinfo("功能提示", "代码折叠功能正在开发中")
+
+    def _unfold_all(self):
+        messagebox.showinfo("功能提示", "代码展开功能正在开发中")
 
     # ---------------- settings ----------------
     def open_settings(self):
@@ -1427,6 +1259,13 @@ class MiniIDE(tk.Tk):
             self.save_config()
             messagebox.showinfo("GCC 绑定", f"GCC 路径已设置为: {gcc_path}")
 
+    def _toggle_theme(self):
+        current_theme = self.config_data.get("theme", "light")
+        new_theme = "dark" if current_theme == "light" else "light"
+        self.config_data["theme"] = new_theme
+        self.save_config()
+        self._apply_theme()
+
     # ---------------- status bar ----------------
     def _build_statusbar(self):
         statusbar = ttk.Frame(self)
@@ -1462,7 +1301,7 @@ class MiniIDE(tk.Tk):
         
         # 更新当前文件信息
         frame = self._get_current_editor_frame()
-        if frame and frame.filepath:
+        if frame and hasattr(frame, 'filepath') and frame.filepath:
             self.file_var.set(f"文件: {os.path.basename(frame.filepath)}")
         else:
             self.file_var.set("未打开文件")
@@ -1485,13 +1324,6 @@ class MiniIDE(tk.Tk):
         if frame:
             frame.ln.config(font=("Consolas", self.config_data["font_size"]))
             self._update_line_numbers(editor, frame.ln)
-
-    def _toggle_theme(self):
-        current_theme = self.config_data.get("theme", "light")
-        new_theme = "dark" if current_theme == "light" else "light"
-        self.config_data["theme"] = new_theme
-        self.save_config()
-        self._apply_theme()
 
     def _undo(self):
         editor = self._get_current_editor()
